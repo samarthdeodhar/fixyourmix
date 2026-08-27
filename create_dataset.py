@@ -3,44 +3,61 @@ import librosa
 import numpy as np
 import pandas as pd
 
-# Path directly to the folder where your 8 beats live
-source_folder = "raw_audio/balanced"
-industry_reference_data = []
+# Folders containing reference audio
+folders = ["raw_audio/balanced", "raw_audio/industry_reference"]
+dataset = []
+real_lows, real_mids, real_highs = [], [], []
 
-print("🎛️ Initializing local scanner. Analyzing your 8 reference beats...")
+print("🎛️ Scanning reference tracks (personal + industry)...")
 
-if not os.path.exists(source_folder):
-    print(f"❌ Error: Could not find the folder '{source_folder}'. Make sure it exists!")
+for folder in folders:
+    if os.path.exists(folder):
+        for file_name in os.listdir(folder):
+            if file_name.lower().endswith((".wav", ".mp3")):
+                file_path = os.path.join(folder, file_name)
+                try:
+                    y, sr = librosa.load(file_path, sr=22050)
+                    S = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=128)
+                    S_db = librosa.power_to_db(S, ref=np.max)
+                    freq_averages = np.mean(S_db, axis=1)
+
+                    low = float(np.mean(freq_averages[0:16]))
+                    mid = float(np.mean(freq_averages[16:80]))
+                    high = float(np.mean(freq_averages[80:128]))
+
+                    dataset.append([low, mid, high, 0])
+                    real_lows.append(low)
+                    real_mids.append(mid)
+                    real_highs.append(high)
+                    print(f"✅ Extracted Baseline: {file_name}")
+                except Exception as e:
+                    print(f"❌ Error reading {file_name}: {e}")
+
+if len(dataset) == 0:
+    print("⚠️ No audio files found. Ensure .wav or .mp3 files exist in raw_audio subfolders.")
 else:
-    # Loop through the files already sitting in your local folder
-    for file_name in os.listdir(source_folder):
-        if file_name.endswith(".wav"):
-            file_path = os.path.join(source_folder, file_name)
+    avg_low = np.mean(real_lows)
+    avg_mid = np.mean(real_mids)
+    avg_high = np.mean(real_highs)
 
-            try:
-                # Process the real track spectrum coefficients (Same as your main.py)
-                y, sr = librosa.load(file_path, sr=22050)
-                S = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=128)
-                S_db = librosa.power_to_db(S, ref=np.max)
-                freq_averages = np.mean(S_db, axis=1)
+    # Save target baseline so app.py can load real empirical standards
+    np.save("baseline_metrics.npy", np.array([avg_low, avg_mid, avg_high]))
+    print(f"\n📊 Empirical Baselines: Low={avg_low:.2f}dB, Mid={avg_mid:.2f}dB, High={avg_high:.2f}dB")
 
-                # Map the true commercial frequency distributions from your tracks
-                low_energy = np.mean(freq_averages[0:16])     # Kick & Bass
-                mid_energy = np.mean(freq_averages[16:80])    # Snares & Melodies
-                high_energy = np.mean(freq_averages[80:128])  # Hi-Hats & Air
+    # Generate synthetic edge cases for training multi-class classifier
+    print("🧪 Synthesizing labeled mix flaws for training...")
+    for _ in range(30):
+        # 0: Balanced (minor natural variance)
+        dataset.append([avg_low + np.random.uniform(-1.5, 1.5),
+                        avg_mid + np.random.uniform(-1.5, 1.5),
+                        avg_high + np.random.uniform(-1.5, 1.5), 0])
+        # 1: Too Muddy (Sub/Bass boosted significantly)
+        dataset.append([avg_low + np.random.uniform(6.0, 14.0), avg_mid, avg_high, 1])
+        # 2: Too Harsh (Highs boosted significantly)
+        dataset.append([avg_low, avg_mid, avg_high + np.random.uniform(6.0, 14.0), 2])
+        # 3: Weak Mids (Scooped midrange)
+        dataset.append([avg_low, avg_mid - np.random.uniform(7.0, 15.0), avg_high, 3])
 
-                # Label 0 means this is your target "Gold Standard" balanced baseline
-                industry_reference_data.append([low_energy, mid_energy, high_energy, 0])
-                print(f"📊 Gold Standard Baseline Extracted from: {file_name}")
-
-            except Exception as e:
-                print(f"❌ Error analyzing local file {file_name}: {e}")
-
-# Build your pristine empirical reference catalog spreadsheet
-if len(industry_reference_data) > 0:
-    columns = ["low_energy", "mid_energy", "high_energy", "label"]
-    df = pd.DataFrame(industry_reference_data, columns=columns)
+    df = pd.DataFrame(dataset, columns=["low_energy", "mid_energy", "high_energy", "label"])
     df.to_csv("mix_dataset.csv", index=False)
-    print("\n🎉 SUCCESS! 'mix_dataset.csv' created from your local 8 beats.")
-else:
-    print("\n⚠️ No data saved. Ensure your 8 WAV files are inside 'raw_audio/balanced'.")
+    print("🎉 SUCCESS: Generated 'mix_dataset.csv' & 'baseline_metrics.npy'.")
