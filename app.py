@@ -1,178 +1,113 @@
 import streamlit as st
 import numpy as np
 import librosa
-import joblib
 import bcrypt
 import plotly.graph_objects as go
 from supabase import create_client, Client
-import os
 
-# 1. Initialize Supabase Connection
+# 1. Page Configuration
+st.set_page_config(
+    page_title="fixyourmix.ai | Trap Mixing Engine",
+    page_icon="🎛️",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
+st.markdown("""
+<style>
+    .stApp { background-color: #0b0e14; color: #e6edf3; font-family: -apple-system, sans-serif; }
+    .hero-title { font-size: 2.4rem; font-weight: 800; background: linear-gradient(90deg, #ff4b4b, #00f2fe); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    div[data-testid="stMetricValue"] { color: #f0f6fc !important; font-weight: 700; font-size: 1.5rem !important; }
+    .stAlert { border-radius: 10px; }
+</style>
+""", unsafe_allow_html=True)
+
+# 2. Database Init (Optional for this view)
 SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL else None
 
-@st.cache_resource
-def get_supabase_client():
-    if SUPABASE_URL and SUPABASE_KEY:
-        return create_client(SUPABASE_URL, SUPABASE_KEY)
-    return None
-
-supabase: Client = get_supabase_client()
-
-# 2. Web Page Configuration
-st.set_page_config(page_title="fixyourmix.ai", page_icon="🎛️", layout="wide")
-st.title("🎛️ fixyourmix.ai")
-st.subheader("Automated Machine Learning Audio Analytics for Trap Producers")
+st.markdown('<div class="hero-title">🎛️ fixyourmix.ai</div>', unsafe_allow_html=True)
+st.markdown('### AI Source Separation & Clash Detection Engine')
 st.write("---")
 
-# 3. Sidebar Authentication
-st.sidebar.title("🔐 Producer Access Portal")
-if "logged_in_user" not in st.session_state:
-    st.session_state["logged_in_user"] = None
-
-if st.session_state["logged_in_user"] is None:
-    menu = ["Guest Mode", "Login", "Sign Up"]
-    choice = st.sidebar.selectbox("Select Mode", menu)
-
-    if choice == "Guest Mode":
-        st.sidebar.info("Session: **Guest Producer**")
-    elif choice == "Sign Up":
-        st.sidebar.subheader("Create Account")
-        new_user = st.sidebar.text_input("Username/Email")
-        new_pass = st.sidebar.text_input("Password", type="password")
-        if st.sidebar.button("Register"):
-            if new_user and new_pass and supabase:
-                hashed = bcrypt.hashpw(new_pass.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-                try:
-                    supabase.table("profiles").insert({"username": new_user, "password_hash": hashed}).execute()
-                    st.sidebar.success("Account created! Switch to Login.")
-                except Exception as e:
-                    st.sidebar.error(f"Error: {e}")
-    elif choice == "Login":
-        st.sidebar.subheader("Login")
-        login_user = st.sidebar.text_input("Username/Email")
-        login_pass = st.sidebar.text_input("Password", type="password")
-        if st.sidebar.button("Access Dashboard"):
-            if supabase:
-                try:
-                    res = supabase.table("profiles").select("*").eq("username", login_user).execute()
-                    if res.data and bcrypt.checkpw(login_pass.encode('utf-8'), res.data[0]["password_hash"].encode('utf-8')):
-                        st.session_state["logged_in_user"] = login_user
-                        st.rerun()
-                    else:
-                        st.sidebar.error("Invalid credentials.")
-                except Exception as e:
-                    st.sidebar.error(f"Auth Error: {e}")
-else:
-    st.sidebar.success(f"Verified: **{st.session_state['logged_in_user']}**")
-    if st.sidebar.button("Log Out"):
-        st.session_state["logged_in_user"] = None
-        st.rerun()
-
-# 4. User Mix Memory
-if st.session_state["logged_in_user"] and supabase:
-    try:
-        past_logs = supabase.table("mix_history").select("*").eq("username", st.session_state["logged_in_user"]).order("created_at", desc=True).limit(5).execute()
-        if past_logs.data:
-            st.markdown("### 🧠 Personal AI Mix Memory")
-            verdicts = [r["verdict"] for r in past_logs.data]
-            if verdicts.count("Too Muddy") >= 2:
-                st.warning("🤖 **AI Trend:** Your mixes frequently lean too heavy in the sub-bass (0–60Hz). Watch your 808 gain staging.")
-            elif verdicts.count("Too Harsh") >= 2:
-                st.warning("🤖 **AI Trend:** High transient harshness detected across recent uploads. Watch your hi-hat velocity levels.")
-            else:
-                st.success("🤖 **AI Trend:** Consistent spectral balance across recent uploads.")
-            st.write("---")
-    except Exception:
-        pass
-
-# 5. Core Audio Analysis Engine
-st.markdown("### 📥 Drop Your Drum Stem or Beat Below")
-uploaded_file = st.file_uploader("Upload audio (.wav or .mp3)", type=["wav", "mp3"])
+uploaded_file = st.file_uploader("Upload your master beat (.wav or .mp3)", type=["wav", "mp3"])
 
 if uploaded_file is not None:
     st.audio(uploaded_file)
-    st.info("🔄 Running Feature Extraction Pipeline...")
 
-    try:
-        y, sr = librosa.load(uploaded_file, sr=22050)
-        S = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=128)
-        S_db = librosa.power_to_db(S, ref=np.max)
-        freq_averages = np.mean(S_db, axis=1)
+    with st.spinner("✂️ Locating the drop and slicing 15 seconds for analysis..."):
+        try:
+            # Load the full audio
+            y, sr = librosa.load(uploaded_file, sr=22050)
 
-        low_energy = float(np.mean(freq_averages[0:16]))
-        mid_energy = float(np.mean(freq_averages[16:80]))
-        high_energy = float(np.mean(freq_averages[80:128]))
+            # Find the drop (loudest part of the track)
+            rms = librosa.feature.rms(y=y)[0]
+            max_rms_frame = np.argmax(rms)
+            start_sample = max(0,
+                               librosa.frames_to_samples(max_rms_frame) - (sr * 2))  # Start 2 seconds before the peak
+            end_sample = min(len(y), start_sample + (sr * 15))  # Grab 15 seconds
 
-        # Load baseline metrics or use calibrated defaults
-        if os.path.exists("baseline_metrics.npy"):
-            target_baseline = np.load("baseline_metrics.npy")
-        else:
-            target_baseline = np.array([-14.0, -22.0, -28.0])
+            y_slice = y[start_sample:end_sample]
 
-        delta_low = low_energy - target_baseline[0]
-        delta_mid = mid_energy - target_baseline[1]
-        delta_high = high_energy - target_baseline[2]
+            st.success("✅ Drop located. Running Harmonic-Percussive Separation...")
 
-        # Predict with ML model
-        pred_id = 0
-        if os.path.exists("mixing_ai_model.pkl"):
-            try:
-                model = joblib.load("mixing_ai_model.pkl")
-                pred = model.predict([[low_energy, mid_energy, high_energy]])
-                pred_id = int(pred[0])
-            except Exception:
-                pred_id = 0
+            # 🧠 The Magic: Separate Sustained Notes (Melody/808) from Transients (Kick/Snare/Hats)
+            y_harmonic, y_percussive = librosa.effects.hpss(y_slice)
 
-        verdict_data = {
-            0: ("🎯 Solid Trap Balance", st.success, "Your track matches commercial reference targets closely across all 3 key frequency zones."),
-            1: ("🚨 Too Muddy (Sub/Bass Dominant)", st.error, f"Your low-end is **{abs(delta_low):.1f} dB** above reference standard. Lower your 808/kick channel or apply a high-pass cut below 30Hz."),
-            2: ("⚠️ Too Harsh (Piercing High-End)", st.warning, f"Your high-end is **{abs(delta_high):.1f} dB** above target. Lower hi-hat velocity or apply a gentle high shelf cut at 8kHz-10kHz."),
-            3: ("⚠️ Scooped Midrange (Weak Melodies/Snare)", st.warning, f"Midrange energy is **{abs(delta_mid):.1f} dB** below reference target. Boost snare/clap volume or clear mud masking the 500Hz-2kHz region.")
-        }
+            # Convert to Decibel Spectrograms
+            S_harm = librosa.power_to_db(librosa.feature.melspectrogram(y=y_harmonic, sr=sr, n_mels=128), ref=np.max)
+            S_perc = librosa.power_to_db(librosa.feature.melspectrogram(y=y_percussive, sr=sr, n_mels=128), ref=np.max)
 
-        title, ui_func, desc = verdict_data.get(pred_id, verdict_data[0])
+            harm_avg = np.mean(S_harm, axis=1)
+            perc_avg = np.mean(S_perc, axis=1)
 
-        st.write("---")
-        st.subheader("📊 AI MIX ANALYSIS REPORT")
-        ui_func(f"### {title}")
-        st.markdown(desc)
+            # Isolate the exact instruments based on trap frequency bands
+            bass_808 = float(np.mean(harm_avg[0:12]))  # Sustained sub (808)
+            kick_drum = float(np.mean(perc_avg[0:12]))  # Transient sub (Kick)
+            melody = float(np.mean(harm_avg[16:80]))  # Sustained mids (Melody/Pads)
+            snare_clap = float(np.mean(perc_avg[16:80]))  # Transient mids (Snare/Clap)
+            hi_hats = float(np.mean(perc_avg[80:128]))  # Transient highs (Hats)
 
-        # Quantitative Metrics Breakdown
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Low Energy (Sub/808)", f"{low_energy:.1f} dB", delta=f"{delta_low:+.1f} dB vs target", delta_color="inverse")
-        col2.metric("Mid Energy (Snare/Melody)", f"{mid_energy:.1f} dB", delta=f"{delta_mid:+.1f} dB vs target", delta_color="normal")
-        col3.metric("High Energy (Hats/Air)", f"{high_energy:.1f} dB", delta=f"{delta_high:+.1f} dB vs target", delta_color="inverse")
+            st.write("---")
+            st.markdown("### 🔍 Advanced Diagnostic Report")
 
-        # Database Telemetry
-        if st.session_state["logged_in_user"] and supabase:
-            try:
-                supabase.table("mix_history").insert({
-                    "username": st.session_state["logged_in_user"],
-                    "low_energy": low_energy,
-                    "mid_energy": mid_energy,
-                    "high_energy": high_energy,
-                    "verdict": title
-                }).execute()
-            except Exception:
-                pass
+            # Engine Logic: Clash Detection
 
-        # Visualization
-        st.write("---")
-        st.subheader("📉 Real-Time Spectral Balance Curve")
-        frequency_zones = ["Low (0-250Hz / 808)", "Mid (250Hz-4kHz / Melodies)", "High (4kHz-20kHz / Hats)"]
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=frequency_zones, y=[low_energy, mid_energy, high_energy], mode='lines+markers', name='Your Uploaded Mix', line=dict(color='#ff4b4b', width=4)))
-        fig.add_trace(go.Scatter(x=frequency_zones, y=target_baseline.tolist(), mode='lines+markers', name='Industry Target Curve', line=dict(color='#00f2fe', width=3, dash='dash')))
+            # 1. Kick vs 808 Clash
+            low_diff = abs(kick_drum - bass_808)
+            if kick_drum > -40 and bass_808 > -40:  # If both exist
+                if low_diff < 3.0:
+                    st.error(
+                        f"🚨 **LOW-END CLASH DETECTED:** Your Kick drum ({kick_drum:.1f} dB) and 808 ({bass_808:.1f} dB) are fighting for the exact same frequencies. Sidechain the 808 to the kick, or carve an EQ hole in the 808 at 50Hz.")
+                elif kick_drum > bass_808 + 5:
+                    st.warning(
+                        "⚠️ **WEAK 808:** Your kick is punching right through, but the 808 sub-bass is buried. Turn up the 808 or add saturation.")
+                else:
+                    st.success("🎯 **Clean Low-End:** Your Kick and 808 are separated well and not phasing.")
+            else:
+                st.info(
+                    "ℹ️ **Standard Trap Bass:** Only detecting heavy 808 energy without a hard kick. No low-end clashing detected.")
 
-        fig.update_layout(
-            xaxis_title="Frequency Zone",
-            yaxis_title="Energy (dB)",
-            template="plotly_dark",
-            yaxis=dict(range=[-55, 0]),
-            legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
-        )
-        st.plotly_chart(fig, use_container_width=True)
+            # 2. Melody vs Snare Masking
+            if snare_clap < melody - 2:
+                st.warning(
+                    f"🚨 **BURIED SNARE:** Your main melodies ({melody:.1f} dB) are masking your snare drum ({snare_clap:.1f} dB). Turn the snare bus up, or apply a slight EQ dip to the melody around 1kHz - 2kHz.")
+            else:
+                st.success("🎯 **Crisp Mid-Range:** Your snare is punching cleanly through the melody.")
 
-    except Exception as e:
-        st.error(f"Processing Error: {e}")
+            # 3. Hi-Hat Harshness
+            if hi_hats > melody + 5:
+                st.warning(
+                    "🚨 **HARSH HIGHS:** Your hi-hats are overpowering the entire mix. Turn down the hat velocities to sit them properly in the background.")
+
+            st.write("---")
+            st.markdown("### 🎛️ Stem Isolation Overview")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("808 Power", f"{(bass_808 + 80) * 1.5:.0f} / 100")
+            m2.metric("Kick Punch", f"{(kick_drum + 80) * 1.5:.0f} / 100")
+            m3.metric("Melody Presence", f"{(melody + 80) * 1.5:.0f} / 100")
+            m4.metric("Snare/Clap Punch", f"{(snare_clap + 80) * 1.5:.0f} / 100")
+
+        except Exception as e:
+            st.error(f"Processing Error: {e}")
