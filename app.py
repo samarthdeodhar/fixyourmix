@@ -2,15 +2,14 @@ import streamlit as st
 import numpy as np
 import librosa
 import bcrypt
-import plotly.graph_objects as go
 from supabase import create_client, Client
 
 # 1. Page Configuration
 st.set_page_config(
-    page_title="fixyourmix.ai | Trap Mixing Engine",
+    page_title="fixyourmix.ai | Trap Peak Engine",
     page_icon="🎛️",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
 st.markdown("""
@@ -22,13 +21,64 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 2. Database Init (Optional for this view)
+# 2. Database Init (Crucial for the essay flex)
 SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL else None
 
+@st.cache_resource
+def get_supabase_client():
+    if SUPABASE_URL and SUPABASE_KEY:
+        try:
+            return create_client(SUPABASE_URL, SUPABASE_KEY)
+        except Exception:
+            return None
+    return None
+
+supabase: Client = get_supabase_client()
+
+# 3. Sidebar Authentication
+st.sidebar.markdown("### 🔐 Producer Portal")
+if "logged_in_user" not in st.session_state:
+    st.session_state["logged_in_user"] = None
+
+if st.session_state["logged_in_user"] is None:
+    choice = st.sidebar.selectbox("Session Type", ["Guest Mode", "Login", "Sign Up"])
+    if choice == "Guest Mode":
+        st.sidebar.info("👤 Logged in as **Guest Producer**")
+    elif choice == "Sign Up":
+        new_user = st.sidebar.text_input("Username / Producer Tag")
+        new_pass = st.sidebar.text_input("Password", type="password")
+        if st.sidebar.button("Register Account"):
+            if new_user and new_pass and supabase:
+                hashed = bcrypt.hashpw(new_pass.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+                try:
+                    supabase.table("profiles").insert({"username": new_user, "password_hash": hashed}).execute()
+                    st.sidebar.success("Account registered! Switch to Login tab.")
+                except:
+                    st.sidebar.error("Registration Error")
+    elif choice == "Login":
+        login_user = st.sidebar.text_input("Username / Tag")
+        login_pass = st.sidebar.text_input("Password", type="password")
+        if st.sidebar.button("Access Studio"):
+            if supabase:
+                try:
+                    res = supabase.table("profiles").select("*").eq("username", login_user).execute()
+                    if res.data and bcrypt.checkpw(login_pass.encode('utf-8'), res.data[0]["password_hash"].encode('utf-8')):
+                        st.session_state["logged_in_user"] = login_user
+                        st.rerun()
+                    else:
+                        st.sidebar.error("Invalid credentials.")
+                except:
+                    st.sidebar.error("Auth Error")
+else:
+    st.sidebar.success(f"🎛️ Producer: **{st.session_state['logged_in_user']}**")
+    if st.sidebar.button("Log Out"):
+        st.session_state["logged_in_user"] = None
+        st.rerun()
+
+# 4. Main App UI
 st.markdown('<div class="hero-title">🎛️ fixyourmix.ai</div>', unsafe_allow_html=True)
-st.markdown('### AI Source Separation & Clash Detection Engine')
+st.markdown('### FL Studio Peak Balance Engine')
 st.write("---")
 
 uploaded_file = st.file_uploader("Upload your master beat (.wav or .mp3)", type=["wav", "mp3"])
@@ -36,78 +86,78 @@ uploaded_file = st.file_uploader("Upload your master beat (.wav or .mp3)", type=
 if uploaded_file is not None:
     st.audio(uploaded_file)
 
-    with st.spinner("✂️ Locating the drop and slicing 15 seconds for analysis..."):
+    with st.spinner("✂️ Locating the drop and calculating Peak dB..."):
         try:
-            # Load the full audio
             y, sr = librosa.load(uploaded_file, sr=22050)
 
-            # Find the drop (loudest part of the track)
+            # Master Volume Check
+            master_peak = float(np.max(librosa.amplitude_to_db(np.abs(y), ref=1.0)))
+
             rms = librosa.feature.rms(y=y)[0]
             max_rms_frame = np.argmax(rms)
-            start_sample = max(0,
-                               librosa.frames_to_samples(max_rms_frame) - (sr * 2))  # Start 2 seconds before the peak
-            end_sample = min(len(y), start_sample + (sr * 15))  # Grab 15 seconds
-
+            start_sample = max(0, librosa.frames_to_samples(max_rms_frame) - (sr * 2))
+            end_sample = min(len(y), start_sample + (sr * 15))
             y_slice = y[start_sample:end_sample]
 
             st.success("✅ Drop located. Running Harmonic-Percussive Separation...")
 
-            # 🧠 The Magic: Separate Sustained Notes (Melody/808) from Transients (Kick/Snare/Hats)
             y_harmonic, y_percussive = librosa.effects.hpss(y_slice)
 
-            # Convert to Decibel Spectrograms
             S_harm = librosa.power_to_db(librosa.feature.melspectrogram(y=y_harmonic, sr=sr, n_mels=128), ref=np.max)
             S_perc = librosa.power_to_db(librosa.feature.melspectrogram(y=y_percussive, sr=sr, n_mels=128), ref=np.max)
 
-            harm_avg = np.mean(S_harm, axis=1)
-            perc_avg = np.mean(S_perc, axis=1)
+            # EXTRACING PEAK DB
+            bass_808 = float(np.max(S_harm[0:12]))
+            kick_drum = float(np.max(S_perc[0:12]))
+            melody = float(np.max(S_harm[16:80]))
+            snare_clap = float(np.max(S_perc[16:80]))
+            hi_hats = float(np.max(S_perc[80:128]))
 
-            # Isolate the exact instruments based on trap frequency bands
-            bass_808 = float(np.mean(harm_avg[0:12]))  # Sustained sub (808)
-            kick_drum = float(np.mean(perc_avg[0:12]))  # Transient sub (Kick)
-            melody = float(np.mean(harm_avg[16:80]))  # Sustained mids (Melody/Pads)
-            snare_clap = float(np.mean(perc_avg[16:80]))  # Transient mids (Snare/Clap)
-            hi_hats = float(np.mean(perc_avg[80:128]))  # Transient highs (Hats)
+            # FL Studio Trap Standards (Peak dBFS)
+            target_808 = -0.5
+            target_kick = -0.5
+            target_snare = -4.5
+            target_melody = -12.0
+            target_hats = -9.0
 
-            st.write("---")
-            st.markdown("### 🔍 Advanced Diagnostic Report")
-
-            # Engine Logic: Clash Detection
-
-            # 1. Kick vs 808 Clash
-            low_diff = abs(kick_drum - bass_808)
-            if kick_drum > -40 and bass_808 > -40:  # If both exist
-                if low_diff < 3.0:
-                    st.error(
-                        f"🚨 **LOW-END CLASH DETECTED:** Your Kick drum ({kick_drum:.1f} dB) and 808 ({bass_808:.1f} dB) are fighting for the exact same frequencies. Sidechain the 808 to the kick, or carve an EQ hole in the 808 at 50Hz.")
-                elif kick_drum > bass_808 + 5:
-                    st.warning(
-                        "⚠️ **WEAK 808:** Your kick is punching right through, but the 808 sub-bass is buried. Turn up the 808 or add saturation.")
-                else:
-                    st.success("🎯 **Clean Low-End:** Your Kick and 808 are separated well and not phasing.")
-            else:
-                st.info(
-                    "ℹ️ **Standard Trap Bass:** Only detecting heavy 808 energy without a hard kick. No low-end clashing detected.")
-
-            # 2. Melody vs Snare Masking
-            if snare_clap < melody - 2:
-                st.warning(
-                    f"🚨 **BURIED SNARE:** Your main melodies ({melody:.1f} dB) are masking your snare drum ({snare_clap:.1f} dB). Turn the snare bus up, or apply a slight EQ dip to the melody around 1kHz - 2kHz.")
-            else:
-                st.success("🎯 **Crisp Mid-Range:** Your snare is punching cleanly through the melody.")
-
-            # 3. Hi-Hat Harshness
-            if hi_hats > melody + 5:
-                st.warning(
-                    "🚨 **HARSH HIGHS:** Your hi-hats are overpowering the entire mix. Turn down the hat velocities to sit them properly in the background.")
+            # Algorithmic Fader Math
+            d_808 = target_808 - bass_808
+            d_kick = target_kick - kick_drum
+            d_snare = target_snare - snare_clap
+            d_melody = target_melody - melody
+            d_hats = target_hats - hi_hats
 
             st.write("---")
-            st.markdown("### 🎛️ Stem Isolation Overview")
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("808 Power", f"{(bass_808 + 80) * 1.5:.0f} / 100")
-            m2.metric("Kick Punch", f"{(kick_drum + 80) * 1.5:.0f} / 100")
-            m3.metric("Melody Presence", f"{(melody + 80) * 1.5:.0f} / 100")
-            m4.metric("Snare/Clap Punch", f"{(snare_clap + 80) * 1.5:.0f} / 100")
+            st.markdown("### 🎛️ Stem Isolation (FL Studio Peak Meters)")
+
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("808 Sub", f"{bass_808:.1f} dB", f"{d_808:+.1f} dB to target", delta_color="off")
+            m2.metric("Kick", f"{kick_drum:.1f} dB", f"{d_kick:+.1f} dB to target", delta_color="off")
+            m3.metric("Clap/Snare", f"{snare_clap:.1f} dB", f"{d_snare:+.1f} dB to target", delta_color="off")
+            m4.metric("Melody", f"{melody:.1f} dB", f"{d_melody:+.1f} dB to target", delta_color="off")
+            m5.metric("Hi-Hats", f"{hi_hats:.1f} dB", f"{d_hats:+.1f} dB to target", delta_color="off")
+
+            st.write("---")
+            st.markdown("### 🔍 Fader Adjustment Blueprint")
+
+            if master_peak < -3.0:
+                st.warning(f"**Master Volume:** Your master is peaking at **{master_peak:.1f} dB**. Slap a soft clipper on the master and push it up closer to 0 dB.")
+
+            if abs(d_808) > 1.5:
+                action = "Boost" if d_808 > 0 else "Lower"
+                st.info(f"**808 Fader:** {action} your 808 by **{abs(d_808):.1f} dB** to hit the standard 0 dB pocket.")
+
+            if abs(d_snare) > 1.5:
+                action = "Boost" if d_snare > 0 else "Lower"
+                st.info(f"**Clap/Snare Fader:** {action} your clap bus by **{abs(d_snare):.1f} dB** to sit right around -4.5 dB.")
+
+            if abs(d_melody) > 2.0:
+                action = "Boost" if d_melody > 0 else "Lower"
+                st.info(f"**Melody Fader:** {action} your main melodies by **{abs(d_melody):.1f} dB** to sit back at -12 dB.")
+
+            if abs(d_hats) > 1.5:
+                action = "Boost" if d_hats > 0 else "Lower"
+                st.info(f"**Hi-Hat Fader:** {action} your hats by **{abs(d_hats):.1f} dB** so they tick cleanly at -9 dB.")
 
         except Exception as e:
             st.error(f"Processing Error: {e}")
