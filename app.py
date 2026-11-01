@@ -6,7 +6,7 @@ from supabase import create_client, Client
 
 # 1. Page Configuration
 st.set_page_config(
-    page_title="fixyourmix.ai | Trap Peak Engine",
+    page_title="fixyourmix| Trap Peak Engine",
     page_icon="🎛️",
     layout="wide",
     initial_sidebar_state="expanded"
