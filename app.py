@@ -79,7 +79,7 @@ else:
         st.rerun()
 
 # 4. Main App UI
-st.markdown('<div class="hero-title">🎛️ fixyourmix.ai</div>', unsafe_allow_html=True)
+st.markdown('<div class="hero-title">🎛️ fixyourmix</div>', unsafe_allow_html=True)
 st.markdown('### FL Studio Peak Balance Engine')
 st.write("---")
 
