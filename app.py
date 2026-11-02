@@ -49,13 +49,15 @@ if st.session_state["logged_in_user"] is None:
         new_user = st.sidebar.text_input("Username / Producer Tag")
         new_pass = st.sidebar.text_input("Password", type="password")
         if st.sidebar.button("Register Account"):
-            if new_user and new_pass and supabase:
+            if not supabase:
+                st.sidebar.error("Database connection missing. Check Streamlit secrets.")
+            elif new_user and new_pass:
                 hashed = bcrypt.hashpw(new_pass.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
                 try:
-                    supabase.table("profiles").insert({"username": new_user, "password_hash": hashed}).execute()
+                    res = supabase.table("profiles").insert({"username": new_user, "password_hash": hashed}).execute()
                     st.sidebar.success("Account registered! Switch to Login tab.")
-                except:
-                    st.sidebar.error("Registration Error")
+                except Exception as e:
+                    st.sidebar.error(f"Supabase Error: {e}")
     elif choice == "Login":
         login_user = st.sidebar.text_input("Username / Tag")
         login_pass = st.sidebar.text_input("Password", type="password")
